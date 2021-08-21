@@ -136,4 +136,14 @@ Just assert.
 
 Okay now we get to know a approximate running logic.
 
+### Coding
+
+Key words in official markdown documents: **The standalone storage is just a warpper of badger key/value API**.
+
+As it is said in [三篇文章了解 TiDB 技术内幕 - 说存储](https://pingcap.com/zh/blog/tidb-internal-1), TiKV uses RockDB as its storage engine, so TiKV do not write data into disk directly. Similar to tinyKV, I think we should write data into `Badger`, then a transparent procedure about writing data into disk will finish by `Badger` instead of on my own.
+
+Recall to `engine_util/doc.go`, `engines.go` contains data struct and methods of badger endgine.
+
+
+
 
