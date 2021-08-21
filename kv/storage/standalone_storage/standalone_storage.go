@@ -101,5 +101,4 @@ func (r *StandAloneReader) IterCF(cf string) engine_util.DBIterator {
 
 func (r *StandAloneReader) Close() {
 	r.txn.Discard()
-	// r.Close() infinite call
 }

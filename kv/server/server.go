@@ -104,7 +104,11 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 		},
 	}
 
-	server.storage.Write(req.GetContext(), delete_data)
+	err := server.storage.Write(req.GetContext(), delete_data)
+
+	if err != nil {
+		return &kvrpcpb.RawDeleteResponse{Error: err.Error()}, nil
+	}
 
 	resp := &kvrpcpb.RawDeleteResponse{}
 

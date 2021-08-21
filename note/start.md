@@ -144,6 +144,29 @@ As it is said in [三篇文章了解 TiDB 技术内幕 - 说存储](https://ping
 
 Recall to `engine_util/doc.go`, `engines.go` contains data struct and methods of badger endgine.
 
+#### Strategy
+
+It's a truely comprehensive framework, just I describe above, I began with the **test case** to understand how these API would be called during the application. Then I happened to know the `engine_util` package warpped various methods about `badger` which is used for tinyKV as an standalone storage engine.
+
+Following the instruction given by official markdown.
+
+**Firstly**, implement the interfaces in `standalone_storage.go`, mainly the action of engine. The most important thing is realize APIs provided in `engine_util` package, and distinguish which function we should use.
+
+For example, function `GetCF()` in `Reader` has receiver `StandAloneReader`(I named it by myself), so `GetCf()` in `engine_util` cannot be used in `Reader` due to the receiver, we should we `GetCFFromTxn()`.
+
+Omit details...
+
+**Secondly**, implement the server. Luckily I have some basic knowledge about `gRPC`. When we implement the server it's a little like the server in C/S framework. We just understand what the request what to do and implement the corresponding funtion.
+
+For example, `RawDelete()` function with reciver server is used to accept the detetion request. What we need to do is to call the storage engine's write function and pass the corresponding parameters, then return the response.
+
+All we need to focus on is the detail logic and remember `Discard()` and `Close()`.
+
+Like in `RawScan()` we need to read `cf_iterator.go` to know the wrapped `badge` APIs...
+
+Omit details...
 
 
+Then Project1 done!
 
+**Note:** though I passed all the test case of project1, there may be some unreasonable code I had written and need to review as progressing.
