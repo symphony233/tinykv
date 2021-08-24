@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"sort"
@@ -25,6 +26,21 @@ import (
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
+
+const Debug = 0
+
+func Must(err error) {
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
+func DebugPrintf(header string, format string, i ...interface{}) {
+	if Debug > 0 {
+		format = header + format
+		log.Output(2, fmt.Sprintf(format, i...))
+	}
+}
 
 func min(a, b uint64) uint64 {
 	if a > b {

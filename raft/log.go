@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"log"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -56,7 +60,23 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	if storage == nil {
+		log.Panic("storage can not be nil")
+	}
+	log := &RaftLog{
+		storage: storage,
+	}
+	firstIndex, err := storage.FirstIndex()
+	Must(err)
+	lastIndex, err := storage.LastIndex()
+	Must(err)
+
+	log.stabled = lastIndex // lastIndex is the last index of memory.entries
+	log.applied = firstIndex - 1
+	log.committed = firstIndex - 1
+	log.entries, _ = storage.Entries(firstIndex, lastIndex+1) // +1 because [,) left close right open range
+
+	return log
 }
 
 // We need to compact the log entries in some point of time like
@@ -81,11 +101,50 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if n := len(l.entries); n != 0 {
+		return l.entries[n-1].Index
+	}
+	if !IsEmptySnap(l.pendingSnapshot) {
+		return l.pendingSnapshot.Metadata.Index
+	}
+
 	return 0
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	i, _ := l.storage.FirstIndex()
+	if i < uint64(len(l.entries)) && len(l.entries) != 0 {
+		return l.entries[0].Index
+	} else {
+		DebugPrintf("WARNING", "Detect empty entry in FirstIndex()")
+	}
+	return i
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	// the valid term range is [index of dummy entry, last index]
+	dummyIndex := l.FirstIndex() - 1
+
+	if i < dummyIndex || i > l.LastIndex() {
+		// TODO: return an error instead?
+		return 0, nil
+	}
+
+	if i < l.FirstIndex() {
+		if !IsEmptySnap(l.pendingSnapshot) {
+			return i, nil
+		}
+	}
+
+	si, err := l.storage.Term(i)
+	if err == nil {
+		return si, nil
+	}
+	if err == ErrCompacted || err == ErrUnavailable {
+		return 0, err
+	}
+	Must(err)
 	return 0, nil
 }
