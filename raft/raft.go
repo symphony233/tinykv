@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"time"
@@ -167,6 +168,9 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	//Pengding conf flag
+	PendingConf bool
 }
 
 // newRaft return a raft peer with the given config
@@ -246,6 +250,36 @@ func (r *Raft) setRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + rand.New(rand.NewSource(time.Now().UnixNano())).Intn(r.electionTimeout)
 }
 
+func (r *Raft) reset(term uint64) {
+	if r.Term != term {
+		r.Term = term
+		r.Vote = 0
+	}
+
+	r.Lead = None
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	r.setRandomizedElectionTimeout()
+
+	//abortLeaderTransfer
+
+	r.votes = make(map[uint64]bool)
+
+	// reset 的时候 针对Prs中的每一个pr，我们将progress中的
+	// next和match进行重新设定。其中next就是当前raft节点实例
+	// 中的raftlog所记录的最后一个memorystorage.ents数组中
+	// 最后一个entries的索引，可以理解为已经持久化部分的最后一个
+	// 索引。那么Next、Match重新设定的值就显而易见了。
+	for i, pr := range r.Prs {
+		*pr = Progress{Next: r.RaftLog.LastIndex() + 1}
+		if i == r.id {
+			pr.Match = r.RaftLog.LastIndex()
+		}
+	}
+
+	//TODO: pengdingconfi
+}
+
 // is timeout ?
 func (r *Raft) isElectionTimeout() bool {
 	return r.randomizedElectionTimeout <= r.electionElapsed
@@ -289,17 +323,51 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.State = StateFollower
+	r.reset(term)
+	r.Lead = lead
+	DebugPrintf("INFO", "%x became a follower at term %d", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	if r.State == StateLeader {
+		panic(fmt.Sprintf("%x cannot transfer from leader to candidate.", r.id))
+	}
+	r.reset(r.Term + 1)
+	r.Vote = r.id // 首先投给自己？
+	r.State = StateCandidate
+	DebugPrintf("INFO", "%x became candidate at term %d", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+
+	if r.State == StateLeader {
+		panic("Cannot convert follower to leader.")
+	}
+
+	r.reset(r.Term) // 其实就是每一次都重新做一次初始化
+	r.Lead = r.id
+	r.State = StateLeader
+	confCnt := 0
+	for i := 0; i < int(r.RaftLog.committed)+1; i++ {
+		if confCnt > 1 {
+			panic("BecomeLeader: multiple uncommitted config entry")
+		}
+		if r.RaftLog.entries[i].EntryType == pb.EntryType_EntryConfChange {
+			confCnt++
+		}
+	}
+	if confCnt == 1 {
+		r.PendingConf = true
+	}
+
+	//TODO: apply note above: add noop
+
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -339,7 +407,7 @@ func (r *Raft) Step(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
 		if r.State != StateLeader {
-			//trigger election
+			// trigger election
 			// if there is unapplied entries, stop.
 			// commit before applied
 			ents, err := r.RaftLog.storage.Entries(r.RaftLog.applied+1, r.RaftLog.committed+1)
@@ -350,31 +418,66 @@ func (r *Raft) Step(m pb.Message) error {
 				return nil
 			}
 			DebugPrintf("INFO", "%x is starting election at term %d", r.id, r.Term)
-			r.campaign()
+			if len(r.Prs) == 1 {
+				r.becomeLeader()
+			} else {
+				r.campaign()
+			}
+		} else {
+			DebugPrintf("INFO", "%x received MsgHup but it is leader already", r.id)
+		}
+	case pb.MessageType_MsgRequestVote:
+		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
+			// No prevote here
+			// r.Vote == None: 还没投票
+			// m.Term > r.Term: 更新的term
+			// r.Vote == m.From: 已经投过给他了
+			// isUptoDate: term更大的更新，或term相等，index更大的更新
+			msg := pb.Message{
+				MsgType: pb.MessageType_MsgRequestVoteResponse,
+				To:      m.From,
+				From:    r.id,
+				Term:    m.Term, //对方的term
+			}
+			r.sendMessage(msg)
+			r.electionElapsed = 0
+			r.Vote = m.From
+			DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
+				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
+		} else { // 如果不符合上述的判断情况，此时msg中的reject字段就派上用场
+			r.Vote = m.From
+			DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] reject %s from %x [logterm: %d, index: %d] at term %d",
+				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
+			msg := pb.Message{
+				MsgType: pb.MessageType_MsgRequestVoteResponse,
+				To:      m.From,
+				From:    r.id,
+				Term:    r.Term, //reject时，是我方的term
+				Reject:  true,
+			}
+			r.sendMessage(msg)
+		}
+	default:
+		switch r.State {
+		case StateFollower:
+			stepFollower(r, m)
+		case StateCandidate:
+			stepCandidate(r, m)
+		case StateLeader:
+			stepLeader(r, m)
 		}
 	}
 
-	switch r.State {
-	case StateFollower:
-		stepFollower(r, m)
-	case StateCandidate:
-		stepCandidate(r, m)
-	case StateLeader:
-		stepLeader(r, m)
-	}
 	return nil
 }
 
 //election
 func (r *Raft) campaign() {
 	r.becomeCandidate()
-	r.Term = r.Term + 1
-	term, err := r.RaftLog.Term(r.RaftLog.LastIndex())
-	if err != nil {
-		DebugPrintf("ERROR", "Get term in campaign")
-	}
+	// r.Term = r.Term + 1 term + 1 operated in becomecandidate()
+	term := mustTerm(r.RaftLog.Term(r.RaftLog.LastIndex()))
 
-	for id, _ := range r.Prs {
+	for id := range r.Prs {
 		if id == r.id {
 			continue
 		}

@@ -148,3 +148,18 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	Must(err)
 	return 0, nil
 }
+
+func (l *RaftLog) lastTerm() uint64 {
+	term := mustTerm(l.Term(l.LastIndex()))
+	return term
+}
+
+func (l *RaftLog) isUpToDate(lastidx, logterm uint64) bool {
+	lastTerm := l.lastTerm()
+	if logterm > lastTerm {
+		return true
+	} else if logterm == lastTerm && lastidx >= l.LastIndex() {
+		return true
+	}
+	return false
+}
