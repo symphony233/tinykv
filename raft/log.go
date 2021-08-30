@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"errors"
 	"log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -95,7 +96,15 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	i := l.committed
+	j := l.applied + 1
+	entslice := make([]pb.Entry, 0)
+	ltoa(l)
+	for j <= i {
+		entslice = append(entslice, l.entries[j])
+		j++
+	}
+	return entslice
 }
 
 // LastIndex return the last index of the log entries
@@ -129,24 +138,26 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 	if i < dummyIndex || i > l.LastIndex() {
 		// TODO: return an error instead?
-		return 0, nil
+		return 0, errors.New("out of range")
 	}
 
 	if i < l.FirstIndex() {
 		if !IsEmptySnap(l.pendingSnapshot) {
-			return i, nil
+			return i, errors.New("Can't handle pengding snapshot")
 		}
 	}
 
 	si, err := l.storage.Term(i)
 	if err == nil {
 		return si, nil
-	}
-	if err == ErrCompacted || err == ErrUnavailable {
+	} else {
 		return 0, err
 	}
-	Must(err)
-	return 0, nil
+	// if err == ErrCompacted || err == ErrUnavailable {
+	// 	return 0, err
+	// }
+
+	// return 0, nil
 }
 
 func (l *RaftLog) lastTerm() uint64 {
