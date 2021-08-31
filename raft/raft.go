@@ -383,7 +383,7 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.State = StateLeader
 	confCnt := 0
-	for i := 0; i < int(r.RaftLog.committed)+1; i++ {
+	for i := 0; i < int(r.RaftLog.committed) && i < len(r.RaftLog.entries); i++ {
 		if confCnt > 1 {
 			panic("BecomeLeader: multiple uncommitted config entry")
 		}
@@ -554,7 +554,31 @@ func (r *Raft) campaign() {
 
 //Different roles' step function
 func stepLeader(r *Raft, m pb.Message) {
+	prog := r.Prs[m.From]
+	if prog == nil {
+		DebugPrintf("INFO", "%x no progress available for %x", r.id, m.From)
+		return
+	}
 
+	switch m.MsgType {
+	case pb.MessageType_MsgAppendResponse:
+		if m.Reject {
+			//handle reject
+			DebugPrintf("INFO", "%x received msgApp rejection(lastindex: %d) from %x for index %d",
+				r.id, m.Commit, m.From, m.Index)
+			//then retry append
+			//modify progress
+			if m.Index > prog.Match {
+				// reach the lower bound directly
+				prog.Next = prog.Match + 1
+				//send again
+				r.sendAppend(m.From)
+			}
+		} else {
+			//handle ok
+
+		}
+	}
 }
 
 func stepCandidate(r *Raft, m pb.Message) {
@@ -592,6 +616,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.electionElapsed = 0
 	r.Lead = m.From
 
+	// return newer committed
 	if m.Index < r.RaftLog.committed {
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,
@@ -601,10 +626,67 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.sendMessage(msg)
 		return
 	}
+	// term match
 	if r.appTermMatch(m.Index, m.LogTerm) {
+		lastIdx := m.Index + uint64(len(m.Entries))
+
+		confictIdx := -1
+
+		//find conflict
+		for _, ent := range m.Entries {
+			if !r.appTermMatch(ent.Index, ent.Term) {
+				existTerm, err := r.RaftLog.Term(ent.Index)
+				Must(err)
+				if ent.Index <= r.RaftLog.LastIndex() {
+					DebugPrintf("INFO", "found conflict at index %d [existing term: %d, conflicting term: %d]", ent.Index,
+						existTerm, ent.Term)
+				}
+				confictIdx = int(ent.Index)
+				break
+			}
+		}
+		if confictIdx == -1 {
+			confictIdx = 0
+		}
+		//different conflict situation
+		if confictIdx == 0 {
+
+		} else if confictIdx <= int(r.RaftLog.committed) && confictIdx >= 0 {
+			panic(fmt.Sprintf("entry %d conflict with committed entry [committed(%d)]", confictIdx, r.RaftLog.committed))
+		} else {
+			//truncate in unmatch point
+			ents := make([]pb.Entry, 0)
+			for _, ent := range m.Entries {
+				ents = append(ents, *ent)
+			}
+			r.RaftLog.appendEntry(ents[confictIdx-int(m.Index)-1:]...)
+		}
+		//所谓 maybecommit
+		newCommitIdx := min(r.RaftLog.committed, lastIdx)
+		if newCommitIdx > r.RaftLog.LastIndex() {
+			panic("New commit index out of range")
+		}
+		r.RaftLog.committed = newCommitIdx
+
+		msg := pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			Index:   lastIdx,
+		}
+		r.sendMessage(msg)
 
 	} else {
-
+		mIdx, err := r.RaftLog.Term(m.Index)
+		Must(err)
+		DebugPrintf("INFO", "%x [logterm: %d, index: %d] rejected msgApp [logterm: %d, index: %d] from %x",
+			r.id, mIdx, m.Index, m.LogTerm, m.Index, m.From)
+		msg := pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			Reject:  true,
+			Commit:  r.RaftLog.LastIndex(), // trick, use index field as reject hint
+			Index:   m.Index,
+		}
+		r.sendMessage(msg)
 	}
 }
 

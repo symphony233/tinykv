@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -116,8 +117,9 @@ func (l *RaftLog) LastIndex() uint64 {
 	if !IsEmptySnap(l.pendingSnapshot) {
 		return l.pendingSnapshot.Metadata.Index
 	}
-
-	return 0
+	idx, err := l.storage.LastIndex()
+	Must(err)
+	return idx
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
@@ -158,6 +160,30 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// }
 
 	// return 0, nil
+}
+
+func (l *RaftLog) appendEntry(entries ...pb.Entry) uint64 {
+	if len(entries) == 0 {
+		return l.LastIndex()
+	}
+	if entries[0].Index-1 < l.committed {
+		panic(fmt.Sprintf("after(%d) is out of range [committed(%d)]", entries[0].Index-1, l.committed))
+	}
+	after := entries[0].Index
+	switch {
+	case after == l.LastIndex()+1:
+		l.entries = append(l.entries, entries...)
+	case after <= l.stabled:
+		l.stabled = after - 1
+		tempEntries := l.entries[0 : l.stabled+1]
+		l.entries = make([]pb.Entry, l.stabled)
+		copy(l.entries, tempEntries)
+		l.entries = append(l.entries, entries...)
+	default:
+		l.entries = append([]pb.Entry{}, l.entries[0:after]...)
+		l.entries = append(l.entries, entries...)
+	}
+	return l.LastIndex()
 }
 
 func (l *RaftLog) lastTerm() uint64 {
