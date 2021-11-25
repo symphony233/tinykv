@@ -1,0 +1,42 @@
+GO111MODULE=on go test -v --count=1 --parallel=1 -p=1 ./raft -run 2AA
+=== RUN   TestFollowerUpdateTermFromMessage2AA
+--- PASS: TestFollowerUpdateTermFromMessage2AA (0.00s)
+=== RUN   TestCandidateUpdateTermFromMessage2AA
+--- PASS: TestCandidateUpdateTermFromMessage2AA (0.00s)
+=== RUN   TestLeaderUpdateTermFromMessage2AA
+--- PASS: TestLeaderUpdateTermFromMessage2AA (0.00s)
+=== RUN   TestStartAsFollower2AA
+--- PASS: TestStartAsFollower2AA (0.00s)
+=== RUN   TestLeaderBcastBeat2AA
+    raft_paper_test.go:108: msgs = [], want [{MsgHeartbeat 2 1 1 0 0 [] 0 <nil> false {} [] 0} {MsgHeartbeat 3 1 1 0 0 [] 0 <nil> false {} [] 0}]
+--- FAIL: TestLeaderBcastBeat2AA (0.00s)
+=== RUN   TestFollowerStartElection2AA
+--- FAIL: TestFollowerStartElection2AA (0.00s)
+panic: runtime error: index out of range [0] with length 0 [recovered]
+	panic: runtime error: index out of range [0] with length 0
+
+goroutine 23 [running]:
+testing.tRunner.func1.2(0x60d480, 0xc0000ce138)
+	/usr/local/go/src/testing/testing.go:1143 +0x332
+testing.tRunner.func1(0xc00009cc00)
+	/usr/local/go/src/testing/testing.go:1146 +0x4b6
+panic(0x60d480, 0xc0000ce138)
+	/usr/local/go/src/runtime/panic.go:965 +0x1b9
+github.com/pingcap-incubator/tinykv/raft.(*Raft).campaign(0xc0000d8820)
+	/home/meng/projects/tinykv/raft/raft.go:541 +0x39c
+github.com/pingcap-incubator/tinykv/raft.(*Raft).Step(0xc0000d8820, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, ...)
+	/home/meng/projects/tinykv/raft/raft.go:480 +0x168
+github.com/pingcap-incubator/tinykv/raft.(*Raft).electionTick(0xc0000d8820)
+	/home/meng/projects/tinykv/raft/raft.go:326 +0x85
+github.com/pingcap-incubator/tinykv/raft.(*Raft).tick(0xc0000d8820)
+	/home/meng/projects/tinykv/raft/raft.go:344 +0x65
+github.com/pingcap-incubator/tinykv/raft.testNonleaderStartElection(0xc00009cc00, 0x0)
+	/home/meng/projects/tinykv/raft/raft_paper_test.go:141 +0x208
+github.com/pingcap-incubator/tinykv/raft.TestFollowerStartElection2AA(0xc00009cc00)
+	/home/meng/projects/tinykv/raft/raft_paper_test.go:113 +0x34
+testing.tRunner(0xc00009cc00, 0x630308)
+	/usr/local/go/src/testing/testing.go:1193 +0xef
+created by testing.(*T).Run
+	/usr/local/go/src/testing/testing.go:1238 +0x2b3
+FAIL	github.com/pingcap-incubator/tinykv/raft	0.008s
+FAIL

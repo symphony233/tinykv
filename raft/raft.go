@@ -17,9 +17,10 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"time"
+
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -224,8 +225,10 @@ func newRaft(c *Config) *Raft {
 	nodeList := nodes(r)
 	r.setRandomizedElectionTimeout()
 	r.heartbeatTimeout = 10 * r.randomizedElectionTimeout // follow the comment instruction
-	DebugPrintf("INFO", "newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
-		r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.Term)
+	log.Infof("newRaft %x [peers: [%v], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
+		r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.lastTerm())
+	// DebugPrintf("INFO", "newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
+	// r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.Term)
 
 	return r
 }
@@ -235,7 +238,7 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	prog := r.Prs[to]
-	term, terr := r.RaftLog.Term(prog.Next - 1)
+	term, terr := r.RaftLog.Term(prog.Next)
 	ents := r.RaftLog.entries[prog.Next:]
 	pEnts := make([]*pb.Entry, 0)
 	for i := range ents {
@@ -250,7 +253,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	} else {
 		msg = pb.Message{
 			MsgType: pb.MessageType_MsgAppend,
-			Index:   prog.Next - 1,
+			Index:   prog.Next,
+			Term:    r.Term,
+			From:    r.id,
+			To:      to,
 			LogTerm: term,
 			Entries: pEnts,
 			Commit:  r.RaftLog.committed,
@@ -300,13 +306,14 @@ func (r *Raft) reset(term uint64) {
 	// 最后一个entries的索引，可以理解为已经持久化部分的最后一个
 	// 索引。那么Next、Match重新设定的值就显而易见了。
 	for i, pr := range r.Prs {
+		// log.Infof("%d build progress for %d", r.id, i)
 		*pr = Progress{Next: r.RaftLog.LastIndex() + 1}
 		if i == r.id {
 			pr.Match = r.RaftLog.LastIndex()
 		}
 	}
 
-	//TODO: pengdingconfi
+	//TODO: pengdingconfig
 }
 
 // is timeout ?
@@ -323,6 +330,7 @@ func (r *Raft) electionTick() {
 	r.electionElapsed++
 	if r.isElectionTimeout() {
 		r.electionElapsed = 0
+		//pass MsgHub to start a new election.
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	}
 }
@@ -355,7 +363,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.reset(term)
 	r.Lead = lead
-	DebugPrintf("INFO", "%x became a follower at term %d", r.id, r.Term)
+	log.Infof("%x became a follower at term %d", r.id, r.Term)
+	// DebugPrintf("INFO", "%x became a follower at term %d", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -367,7 +376,8 @@ func (r *Raft) becomeCandidate() {
 	r.reset(r.Term + 1)
 	r.Vote = r.id // 首先投给自己？
 	r.State = StateCandidate
-	DebugPrintf("INFO", "%x became candidate at term %d", r.id, r.Term)
+	log.Infof("%x became candidate at term %d", r.id, r.Term)
+	// DebugPrintf("INFO", "%x became candidate at term %d", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -406,10 +416,10 @@ func (r *Raft) becomeLeader() {
 	//Cancel testing for next\match, assume all success before
 	for i, p := range r.Prs {
 		if i == r.id {
-			p.Next = r.RaftLog.LastIndex() + 1
-			p.Match = r.RaftLog.LastIndex()
+			p.Next = r.RaftLog.LastIndex()
+			p.Match = r.RaftLog.LastIndex() - 1
 		} else {
-			p.Next = r.RaftLog.LastIndex() + 1
+			p.Next = r.RaftLog.LastIndex()
 		}
 	}
 }
@@ -421,7 +431,9 @@ func (r *Raft) rawAppendEntry(ent ...pb.Entry) {
 func (r *Raft) bcastAppend() {
 	for id := range r.Prs {
 		if id != r.id {
-			r.sendAppend(id)
+			if !r.sendAppend(id) {
+				log.Panicf("In bcastAppend, sendAppend to %d failed", id)
+			}
 		}
 	}
 }
@@ -433,30 +445,35 @@ func (r *Raft) Step(m pb.Message) error {
 	// This block mainly learn from etcd
 
 	// handle term
-	switch {
-	case m.Term == 0:
-		//test doesn't set term for the local messages:
-		//MessageType_MsgHup, MessageType_MsgBeat and MessageType_MsgPropose
-	case m.Term > r.Term:
-		//TODO: handle become follower
-		switch {
-		default:
-			DebugPrintf("INFO", "%x [term: %d] received a %s message with higher term from %x [term: %d]",
-				r.id, r.Term, m.MsgType, m.From, m.Term)
-			//TODO: handle vote msg
-			//becomeFollower but continue
-			if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
-				r.becomeFollower(m.Term, m.From)
-			} else {
-				r.becomeFollower(m.Term, None)
-			}
-		}
-	case m.Term < r.Term:
-		//ah... Distinct different situation is too complicate... ignore all for a while...
-		DebugPrintf("INFO", "%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
-			r.id, r.Term, m.MsgType, m.From, m.Term)
-		return nil //After ignore, return.
-	}
+	// switch {
+	// case m.Term == 0:
+	// 	//test doesn't set term for the local messages:
+	// 	//MessageType_MsgHup, MessageType_MsgBeat and MessageType_MsgPropose
+	// case m.Term > r.Term:
+	// 	//TODO: handle become follower
+	// 	switch {
+	// 	default:
+	// 		log.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
+	// 			r.id, r.Term, m.MsgType, m.From, m.Term)
+	// 		// DebugPrintf("INFO", "%x [term: %d] received a %s message with higher term from %x [term: %d]",
+	// 		// r.id, r.Term, m.MsgType, m.From, m.Term)
+	// 		//TODO: handle vote msg
+	// 		//becomeFollower but continue
+	// 		//if a candidate or leader discovers that its term is out of data, it reverts to follower immediately.
+	// 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
+	// 			r.becomeFollower(m.Term, m.From)
+	// 		} else {
+	// 			r.becomeFollower(m.Term, None)
+	// 		}
+	// 	}
+	// case m.Term < r.Term:
+	// 	//ah... Distinct different situation is too complicate... ignore all for a while...
+	// 	log.Warnf("%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
+	// 		r.id, r.Term, m.MsgType, m.From, m.Term)
+	// 	// DebugPrintf("INFO", "%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
+	// 	// 	r.id, r.Term, m.MsgType, m.From, m.Term)
+	// 	return nil //After ignore, return.
+	// }
 
 	//If unnecessary to becomefollower and m.term >= r.term continue Step
 	//Suitable for three roles
@@ -470,38 +487,46 @@ func (r *Raft) Step(m pb.Message) error {
 			Must(err)
 			//can't elect when there are confs is not up to date.
 			if lenEnts := len(ents); lenEnts != 0 && r.RaftLog.committed > r.RaftLog.applied {
-				DebugPrintf("WARNING", "%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
+				log.Warnf("%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
+				// DebugPrintf("WARNING", "%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
 				return nil
 			}
-			DebugPrintf("INFO", "%x is starting election at term %d", r.id, r.Term)
-			if len(r.Prs) == 1 {
+			log.Infof("%x is starting election at term %d", r.id, r.Term)
+			// DebugPrintf("INFO", "%x is starting election at term %d", r.id, r.Term)
+			if len(r.Prs) == 1 { //only one, it's leader.
 				r.becomeLeader()
 			} else {
 				r.campaign()
 			}
 		} else {
-			DebugPrintf("INFO", "%x received MsgHup but it is leader already", r.id)
+			log.Infof("%x received MsgHup but it is leader already", r.id)
+			// DebugPrintf("INFO", "%x received MsgHup but it is leader already", r.id)
 		}
 	case pb.MessageType_MsgRequestVote:
-		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
+		if (r.Vote == None && m.Term > r.Term || r.Vote == m.From) && r.RaftLog.isUpToDate(m.GetCommit(), m.GetLogTerm()) {
 			// No prevote here
 			// r.Vote == None: 还没投票
 			// m.Term > r.Term: 更新的term
 			// r.Vote == m.From: 已经投过给他了
-			// isUptoDate: term更大的更新，或term相等，index更大的更新
+			// isUptoDate: 请求方term大，才是uptodate的、合法的
 			msg := pb.Message{
 				MsgType: pb.MessageType_MsgRequestVoteResponse,
 				To:      m.From,
 				From:    r.id,
 				Term:    m.Term, //对方的term
 			}
+			if r.State == StateCandidate || r.State == StateLeader {
+				r.becomeFollower(m.GetTerm(), None)
+			}
 			r.sendMessage(msg)
 			r.electionElapsed = 0
 			r.Vote = m.From
-			DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
+			log.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
 				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
+			// DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
+			// 	r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
 		} else { // 如果不符合上述的判断情况，此时msg中的reject字段就派上用场
-			r.Vote = m.From
+			// r.Vote = m.From
 			DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] reject %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
 			msg := pb.Message{
@@ -530,22 +555,28 @@ func (r *Raft) Step(m pb.Message) error {
 //election
 func (r *Raft) campaign() {
 	r.becomeCandidate()
-	// r.Term = r.Term + 1 term + 1 operated in becomecandidate()
-	term := mustTerm(r.RaftLog.Term(r.RaftLog.LastIndex()))
+	// r.Term = r.Term + 1, term + 1 operated in becomecandidate()
 
+	//mustTerm get the lastindex term.
+	last_log_term := mustTerm(r.RaftLog.Term(r.RaftLog.LastIndex()))
+
+	//loop to send requestvote in the whole cluster
 	for id := range r.Prs {
 		if id == r.id {
 			continue
 		}
-		DebugPrintf("INFO", "%x [logterm: %d, index: %d] sent %s request to %x at term %d",
+		log.Infof("%x [logterm: %d, index: %d] sent %s request to %x at term %d",
 			r.id, r.RaftLog.entries[r.RaftLog.LastIndex()], r.RaftLog.LastIndex(), "pb.MessageType_MsgRequestVote", id, r.Term)
+		// DebugPrintf("INFO", "%x [logterm: %d, index: %d] sent %s request to %x at term %d",
+		// 	r.id, r.RaftLog.entries[r.RaftLog.LastIndex()], r.RaftLog.LastIndex(), "pb.MessageType_MsgRequestVote", id, r.Term)
 
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgRequestVote,
 			From:    r.id,
 			To:      id,
+			Commit:  r.RaftLog.committed,
 			Term:    r.Term,
-			LogTerm: term,
+			LogTerm: last_log_term,
 			Index:   r.RaftLog.LastIndex(),
 		}
 		r.sendMessage(msg)
@@ -556,16 +587,19 @@ func (r *Raft) campaign() {
 func stepLeader(r *Raft, m pb.Message) {
 	prog := r.Prs[m.From]
 	if prog == nil {
-		DebugPrintf("INFO", "%x no progress available for %x", r.id, m.From)
-		return
+		log.Warnf("%x no progress available for %x", r.id, m.From)
+		// DebugPrintf("INFO", "%x no progress available for %x", r.id, m.From)
+		// return
 	}
 
 	switch m.MsgType {
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
 			//handle reject
-			DebugPrintf("INFO", "%x received msgApp rejection(lastindex: %d) from %x for index %d",
+			log.Infof("%x received msgApp rejection(lastindex: %d) from %x for sent next index %d",
 				r.id, m.Commit, m.From, m.Index)
+			// DebugPrintf("INFO", "%x received msgApp rejection(lastindex: %d) from %x for index %d",
+			// 	r.id, m.Commit, m.From, m.Index)
 			//then retry append
 			//modify progress
 			if m.Index > prog.Match {
@@ -576,7 +610,15 @@ func stepLeader(r *Raft, m pb.Message) {
 			}
 		} else {
 			//handle ok
-
+			//?
+			prog.Match = r.RaftLog.LastIndex()
+			prog.Next = r.RaftLog.LastIndex() + 1
+		}
+	case pb.MessageType_MsgAppend:
+		log.Infof("%d received MsgAppend in it's term %d from %d with term %d.", r.id, r.Term, m.GetFrom(), m.GetTerm())
+		if m.GetTerm() > r.Term {
+			r.becomeFollower(r.Term, m.GetFrom())
+			r.handleAppendEntries(m)
 		}
 	}
 }
@@ -587,19 +629,23 @@ func stepCandidate(r *Raft, m pb.Message) {
 	case pb.MessageType_MsgRequestVoteResponse:
 		granted := 0
 		if _, flag := r.votes[m.From]; !flag {
-			r.votes[m.From] = m.Reject
+			r.votes[m.From] = m.GetReject()
 		}
 		for _, val := range r.votes {
 			if val {
 				granted++
 			}
 		}
-		if granted == r.quorum() { // note: ==
+		if granted >= r.quorum() { // == ?
 			r.becomeLeader()
 			r.bcastAppend()
-		} else if r.quorum() == len(r.votes)-granted { //note: ==
+		} else { //note: ==
 			r.becomeFollower(r.Term, None) // didn't get enough votes
 		}
+	case pb.MessageType_MsgAppend:
+		//candidate received masappend, indicating there is a validate leader.
+		r.becomeFollower(r.Term, m.GetFrom())
+		r.handleAppendEntries(m)
 	}
 }
 
@@ -616,19 +662,21 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.electionElapsed = 0
 	r.Lead = m.From
 
-	// return newer committed
-	if m.Index < r.RaftLog.committed {
-		msg := pb.Message{
-			MsgType: pb.MessageType_MsgAppendResponse,
-			To:      m.From,
-			Index:   r.RaftLog.committed,
-		}
-		r.sendMessage(msg)
-		return
-	}
+	// if m.GetLogTerm() < r.RaftLog.committed {
+	// 	msg := pb.Message{
+	// 		MsgType: pb.MessageType_MsgAppendResponse,
+	// 		To:      m.From,
+	// 		From:    r.id,
+	// 		Index:   r.RaftLog.committed,
+	// 		Reject:  true,
+	// 		LogTerm: mustTerm(r.RaftLog.Term(r.RaftLog.committed)),
+	// 	}
+	// 	r.sendMessage(msg)
+	// 	return
+	// }
 	// term match
 	if r.appTermMatch(m.Index, m.LogTerm) {
-		lastIdx := m.Index + uint64(len(m.Entries))
+		// lastIdx := m.Index + uint64(len(m.Entries))
 
 		confictIdx := -1
 
@@ -638,8 +686,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				existTerm, err := r.RaftLog.Term(ent.Index)
 				Must(err)
 				if ent.Index <= r.RaftLog.LastIndex() {
-					DebugPrintf("INFO", "found conflict at index %d [existing term: %d, conflicting term: %d]", ent.Index,
+					log.Warnf("found conflict at index %d [existing term: %d, conflicting term: %d]", ent.Index,
 						existTerm, ent.Term)
+					// DebugPrintf("INFO", "found conflict at index %d [existing term: %d, conflicting term: %d]", ent.Index,
+					// 	existTerm, ent.Term)
 				}
 				confictIdx = int(ent.Index)
 				break
@@ -650,31 +700,35 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		//different conflict situation
 		if confictIdx == 0 {
-
+			//pass
 		} else if confictIdx <= int(r.RaftLog.committed) && confictIdx >= 0 {
+			//impossible situation
 			panic(fmt.Sprintf("entry %d conflict with committed entry [committed(%d)]", confictIdx, r.RaftLog.committed))
 		} else {
 			//truncate in unmatch point
+			r.RaftLog.entries = r.RaftLog.entries[:confictIdx] //right open [,)
 			ents := make([]pb.Entry, 0)
 			for _, ent := range m.Entries {
 				ents = append(ents, *ent)
 			}
-			r.RaftLog.appendEntry(ents[confictIdx-int(m.Index)-1:]...)
+			r.RaftLog.appendEntry(ents[confictIdx:]...)
 		}
 		//所谓 maybecommit
-		newCommitIdx := min(r.RaftLog.committed, lastIdx)
-		if newCommitIdx > r.RaftLog.LastIndex() {
-			panic("New commit index out of range")
-		}
-		r.RaftLog.committed = newCommitIdx
+		// newCommitIdx := min(r.RaftLog.committed, lastIdx)
+		// if newCommitIdx > r.RaftLog.LastIndex() {
+		// 	panic("New commit index out of range")
+		// }
+		// r.RaftLog.committed = newCommitIdx
 
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,
 			To:      m.From,
-			Index:   lastIdx,
+			From:    r.id,
+			Index:   r.RaftLog.LastIndex(),
+			Reject:  false,
 		}
+		r.Term = m.GetTerm()
 		r.sendMessage(msg)
-
 	} else {
 		mIdx, err := r.RaftLog.Term(m.Index)
 		Must(err)
@@ -685,6 +739,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			Reject:  true,
 			Commit:  r.RaftLog.LastIndex(), // trick, use index field as reject hint
 			Index:   m.Index,
+			To:      m.GetFrom(),
+			From:    r.id,
+			LogTerm: mustTerm(r.RaftLog.Term(r.RaftLog.LastIndex())), // use lastTerm?
 		}
 		r.sendMessage(msg)
 	}

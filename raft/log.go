@@ -17,7 +17,8 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"log"
+
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -65,7 +66,7 @@ func newLog(storage Storage) *RaftLog {
 	if storage == nil {
 		log.Panic("storage can not be nil")
 	}
-	log := &RaftLog{
+	r_log := &RaftLog{
 		storage: storage,
 	}
 	firstIndex, err := storage.FirstIndex()
@@ -73,12 +74,12 @@ func newLog(storage Storage) *RaftLog {
 	lastIndex, err := storage.LastIndex()
 	Must(err)
 
-	log.stabled = lastIndex // lastIndex is the last index of memory.entries
-	log.applied = firstIndex - 1
-	log.committed = firstIndex - 1
-	log.entries, _ = storage.Entries(firstIndex, lastIndex+1) // +1 because [,) left close right open range
+	r_log.stabled = lastIndex // lastIndex is the last index of memory.entries
+	r_log.applied = firstIndex - 1
+	r_log.committed = firstIndex - 1
+	r_log.entries, _ = storage.Entries(firstIndex, lastIndex+1) // +1 because [,) left close right open range
 
-	return log
+	return r_log
 }
 
 // We need to compact the log entries in some point of time like
@@ -127,7 +128,7 @@ func (l *RaftLog) FirstIndex() uint64 {
 	if i < uint64(len(l.entries)) && len(l.entries) != 0 {
 		return l.entries[0].Index
 	} else {
-		DebugPrintf("WARNING", "Detect empty entry in FirstIndex()")
+		log.Warning("Detect empty entry in FirstIndex()")
 	}
 	return i
 }
@@ -145,10 +146,11 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 	if i < l.FirstIndex() {
 		if !IsEmptySnap(l.pendingSnapshot) {
-			return i, errors.New("Can't handle pengding snapshot")
+			return i, errors.New("can't handle pengding snapshot")
 		}
 	}
 
+	//storage.term retunr the term of entry i between firstIndex and lastIndex
 	si, err := l.storage.Term(i)
 	if err == nil {
 		return si, nil
@@ -191,11 +193,11 @@ func (l *RaftLog) lastTerm() uint64 {
 	return term
 }
 
-func (l *RaftLog) isUpToDate(lastidx, logterm uint64) bool {
+func (l *RaftLog) isUpToDate(committedidx, logterm uint64) bool {
 	lastTerm := l.lastTerm()
-	if logterm > lastTerm {
+	if logterm > lastTerm { //as description in paper, >= in term is uptodate.
 		return true
-	} else if logterm == lastTerm && lastidx >= l.LastIndex() {
+	} else if logterm == lastTerm && committedidx >= l.committed {
 		return true
 	}
 	return false
