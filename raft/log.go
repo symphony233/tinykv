@@ -124,29 +124,38 @@ func (l *RaftLog) LastIndex() uint64 {
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
-	i, _ := l.storage.FirstIndex()
+	i, err := l.storage.FirstIndex()
+	if err != nil {
+		log.Warning("Detect empty entry in FirstIndex()")
+		return 0
+	}
 	if i < uint64(len(l.entries)) && len(l.entries) != 0 {
 		return l.entries[0].Index
 	} else {
 		log.Warning("Detect empty entry in FirstIndex()")
+		return 0
 	}
-	return i
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	// the valid term range is [index of dummy entry, last index]
-	dummyIndex := l.FirstIndex() - 1
+	var dummyIndex uint64
+	if i == 0 {
+		dummyIndex = 0
+	} else {
+		dummyIndex = l.FirstIndex() - 1
+	}
 
 	if i < dummyIndex || i > l.LastIndex() {
 		// TODO: return an error instead?
-		return 0, errors.New("out of range")
+		return 0, fmt.Errorf("require term with the index %d out of range, dummyIndex %d lastIndex %d", i, dummyIndex, l.LastIndex())
 	}
 
 	if i < l.FirstIndex() {
 		if !IsEmptySnap(l.pendingSnapshot) {
-			return i, errors.New("can't handle pengding snapshot")
+			return 0, errors.New("can't handle pengding snapshot")
 		}
 	}
 
@@ -178,7 +187,7 @@ func (l *RaftLog) appendEntry(entries ...pb.Entry) uint64 {
 	case after <= l.stabled:
 		l.stabled = after - 1
 		tempEntries := l.entries[0 : l.stabled+1]
-		l.entries = make([]pb.Entry, l.stabled)
+		l.entries = make([]pb.Entry, l.stabled+1)
 		copy(l.entries, tempEntries)
 		l.entries = append(l.entries, entries...)
 	default:

@@ -223,10 +223,10 @@ func newRaft(c *Config) *Raft {
 	r.becomeFollower(r.Term, r.Lead)
 	//randomize the timeout to avoid votes split
 	nodeList := nodes(r)
-	r.setRandomizedElectionTimeout()
-	r.heartbeatTimeout = 10 * r.randomizedElectionTimeout // follow the comment instruction
-	log.Infof("newRaft %x [peers: [%v], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
-		r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.lastTerm())
+	r.setRandomizedElectionTimeout() // random election timeout
+	// r.heartbeatTimeout = 10 * r.randomizedElectionTimeout // follow the comment instruction
+	log.Infof("newRaft %x [peers: [%v], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d], heartbeatTimeout %d, electionTimeout %d",
+		r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.lastTerm(), r.heartbeatTimeout, r.electionTimeout)
 	// DebugPrintf("INFO", "newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
 	// r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.Term)
 
@@ -269,6 +269,14 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeat,
+		Term:    r.Term,
+		Commit:  r.RaftLog.committed,
+		From:    r.id,
+		To:      to,
+	}
+	r.sendMessage(msg)
 }
 
 func (r *Raft) sendMessage(m pb.Message) {
@@ -294,7 +302,7 @@ func (r *Raft) reset(term uint64) {
 	r.Lead = None
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
-	r.setRandomizedElectionTimeout()
+	// r.setRandomizedElectionTimeout()
 
 	//abortLeaderTransfer
 
@@ -316,9 +324,10 @@ func (r *Raft) reset(term uint64) {
 	//TODO: pengdingconfig
 }
 
-// is timeout ?
+// is electiontimeout ?
 func (r *Raft) isElectionTimeout() bool {
-	return r.randomizedElectionTimeout <= r.electionElapsed
+	// return r.randomizedElectionTimeout <= r.electionElapsed
+	return r.electionTimeout <= r.electionElapsed
 }
 
 func (r *Raft) isHeartbeatTimeout() bool {
@@ -329,17 +338,21 @@ func (r *Raft) isHeartbeatTimeout() bool {
 func (r *Raft) electionTick() {
 	r.electionElapsed++
 	if r.isElectionTimeout() {
+		log.Infof("%d triggered electionTimeout at term %d, with timeout baseline %d, now it's %d", r.id, r.Term, r.electionTimeout, r.electionElapsed)
 		r.electionElapsed = 0
+
 		//pass MsgHub to start a new election.
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	}
 }
 
-// HeartbeatIick for leader
+// HeartbeatTick for leader
 func (r *Raft) heartBeatTick() {
 	r.heartbeatElapsed++
 	if r.isHeartbeatTimeout() {
+		log.Infof("%d trigger heartbeat time out as Leader at term %d", r.id, r.Term)
 		r.heartbeatElapsed = 0
+		//trigger leader to send periodic heartbeat message
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
 	}
 }
@@ -375,6 +388,7 @@ func (r *Raft) becomeCandidate() {
 	}
 	r.reset(r.Term + 1)
 	r.Vote = r.id // 首先投给自己？
+	r.votes[r.id] = true
 	r.State = StateCandidate
 	log.Infof("%x became candidate at term %d", r.id, r.Term)
 	// DebugPrintf("INFO", "%x became candidate at term %d", r.id, r.Term)
@@ -392,6 +406,7 @@ func (r *Raft) becomeLeader() {
 	r.reset(r.Term) // 其实就是每一次都重新做一次初始化
 	r.Lead = r.id
 	r.State = StateLeader
+	log.Infof("%d became Leader in term %d", r.id, r.Term)
 	confCnt := 0
 	for i := 0; i < int(r.RaftLog.committed) && i < len(r.RaftLog.entries); i++ {
 		if confCnt > 1 {
@@ -411,9 +426,16 @@ func (r *Raft) becomeLeader() {
 		Index: r.RaftLog.LastIndex() + 1,
 		Data:  nil,
 	}
-	r.rawAppendEntry(noopEntry)
+	propose_msg := pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		Entries: []*pb.Entry{&noopEntry},
+		From:    r.id,
+		To:      r.id,
+		Term:    r.Term, //hard state term?
+	}
 
 	//Cancel testing for next\match, assume all success before
+	//? why???
 	for i, p := range r.Prs {
 		if i == r.id {
 			p.Next = r.RaftLog.LastIndex()
@@ -422,6 +444,7 @@ func (r *Raft) becomeLeader() {
 			p.Next = r.RaftLog.LastIndex()
 		}
 	}
+	r.sendMessage(propose_msg)
 }
 
 func (r *Raft) rawAppendEntry(ent ...pb.Entry) {
@@ -566,7 +589,7 @@ func (r *Raft) campaign() {
 			continue
 		}
 		log.Infof("%x [logterm: %d, index: %d] sent %s request to %x at term %d",
-			r.id, r.RaftLog.entries[r.RaftLog.LastIndex()], r.RaftLog.LastIndex(), "pb.MessageType_MsgRequestVote", id, r.Term)
+			r.id, last_log_term, r.RaftLog.LastIndex(), "pb.MessageType_MsgRequestVote", id, r.Term)
 		// DebugPrintf("INFO", "%x [logterm: %d, index: %d] sent %s request to %x at term %d",
 		// 	r.id, r.RaftLog.entries[r.RaftLog.LastIndex()], r.RaftLog.LastIndex(), "pb.MessageType_MsgRequestVote", id, r.Term)
 
@@ -620,6 +643,18 @@ func stepLeader(r *Raft, m pb.Message) {
 			r.becomeFollower(r.Term, m.GetFrom())
 			r.handleAppendEntries(m)
 		}
+	case pb.MessageType_MsgPropose:
+		log.Infof("%d received MsgPropose in term %d", r.id, r.Term)
+		r.RaftLog.appendEntry(*m.Entries[0])
+		r.bcastAppend()
+	case pb.MessageType_MsgBeat:
+		for i := range r.Prs {
+			if i != r.id {
+				r.sendHeartbeat(i)
+			}
+		}
+	case pb.MessageType_MsgHeartbeatResponse:
+
 	}
 }
 
@@ -638,7 +673,6 @@ func stepCandidate(r *Raft, m pb.Message) {
 		}
 		if granted >= r.quorum() { // == ?
 			r.becomeLeader()
-			r.bcastAppend()
 		} else { //note: ==
 			r.becomeFollower(r.Term, None) // didn't get enough votes
 		}
@@ -646,6 +680,12 @@ func stepCandidate(r *Raft, m pb.Message) {
 		//candidate received masappend, indicating there is a validate leader.
 		r.becomeFollower(r.Term, m.GetFrom())
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgHeartbeat:
+		if r.Term < m.GetTerm() {
+			r.becomeFollower(r.Term, m.GetFrom())
+			r.RaftLog.committed = m.GetCommit()
+			r.sendMessage(m) // send to it's mailbox (as doc.go says)
+		}
 	}
 }
 
@@ -653,6 +693,20 @@ func stepFollower(r *Raft, m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgPropose:
+		m.From = r.id
+		r.sendMessage(m)
+	case pb.MessageType_MsgHeartbeat:
+		log.Infof("Follower %d received MsgHeartBeat at term %d, with leader term %d", r.id, r.Term, m.GetTerm())
+		if r.Term < m.GetTerm() {
+			r.Lead = m.GetFrom()
+			msg := pb.Message{
+				MsgType: pb.MessageType_MsgHeartbeatResponse,
+				From:    r.id,
+				To:      r.Lead,
+			}
+			r.sendMessage(msg)
+		}
 	}
 }
 
