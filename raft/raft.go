@@ -517,6 +517,7 @@ func (r *Raft) Step(m pb.Message) error {
 			log.Infof("%x is starting election at term %d", r.id, r.Term)
 			// DebugPrintf("INFO", "%x is starting election at term %d", r.id, r.Term)
 			if len(r.Prs) == 1 { //only one, it's leader.
+				r.Term += 1
 				r.becomeLeader()
 			} else {
 				r.campaign()
@@ -526,17 +527,21 @@ func (r *Raft) Step(m pb.Message) error {
 			// DebugPrintf("INFO", "%x received MsgHup but it is leader already", r.id)
 		}
 	case pb.MessageType_MsgRequestVote:
-		if (r.Vote == None && m.Term > r.Term || r.Vote == m.From) && r.RaftLog.isUpToDate(m.GetCommit(), m.GetLogTerm()) {
+		if (r.Vote == None || r.Vote == m.GetFrom()) && m.GetTerm() >= r.Term && r.RaftLog.isUpToDate(m.GetCommit(), m.GetLogTerm()) {
 			// No prevote here
 			// r.Vote == None: 还没投票
-			// m.Term > r.Term: 更新的term
+			// m.Term > r.Term: 更高的term
 			// r.Vote == m.From: 已经投过给他了
 			// isUptoDate: 请求方term大，才是uptodate的、合法的
+
+			// log.Infof("%x [logterm: %d, index: %d, vote: %x] accept %s from %x [logterm: %d, index: %d] at term %d",
+			// 	r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
 			msg := pb.Message{
 				MsgType: pb.MessageType_MsgRequestVoteResponse,
 				To:      m.From,
 				From:    r.id,
 				Term:    m.Term, //对方的term
+				Reject:  false,
 			}
 			if r.State == StateCandidate || r.State == StateLeader {
 				r.becomeFollower(m.GetTerm(), None)
@@ -550,8 +555,10 @@ func (r *Raft) Step(m pb.Message) error {
 			// 	r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
 		} else { // 如果不符合上述的判断情况，此时msg中的reject字段就派上用场
 			// r.Vote = m.From
-			DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] reject %s from %x [logterm: %d, index: %d] at term %d",
+			log.Infof("%x [logterm: %d, index: %d, vote: %x] reject %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
+			// DebugPrintf("INFO", "%x [logterm: %d, index: %d, vote: %x] reject %s from %x [logterm: %d, index: %d] at term %d",
+			// 	r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), r.Vote, m.MsgType, m.From, m.LogTerm, m.Index, r.Term)
 			msg := pb.Message{
 				MsgType: pb.MessageType_MsgRequestVoteResponse,
 				To:      m.From,
@@ -662,19 +669,23 @@ func stepCandidate(r *Raft, m pb.Message) {
 	//only handle vote response
 	switch m.MsgType {
 	case pb.MessageType_MsgRequestVoteResponse:
+		log.Infof("%d received %v Response from %d to %d at trem %d with reject=%v",
+			r.id, "MsgRequestVoteResponse", m.GetFrom(), m.GetTo(), r.Term, m.GetReject())
 		granted := 0
 		if _, flag := r.votes[m.From]; !flag {
-			r.votes[m.From] = m.GetReject()
+			r.votes[m.From] = !m.GetReject()
 		}
 		for _, val := range r.votes {
 			if val {
 				granted++
 			}
 		}
+		// log.Infof("granted: %d, needed senates: %d", granted, r.quorum())
 		if granted >= r.quorum() { // == ?
 			r.becomeLeader()
 		} else { //note: ==
-			r.becomeFollower(r.Term, None) // didn't get enough votes
+			// r.becomeFollower(r.Term, None) // didn't get enough votes
+			// pass for now
 		}
 	case pb.MessageType_MsgAppend:
 		//candidate received masappend, indicating there is a validate leader.
