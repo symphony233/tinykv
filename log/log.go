@@ -10,10 +10,13 @@ package log
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"runtime"
 )
+
+var CLOSE_LOG_OUTPUT bool = true
 
 const (
 	Ldate         = log.Ldate
@@ -54,6 +57,9 @@ var _log *Logger = New()
 
 func init() {
 	SetFlags(Ldate | Ltime | Lshortfile)
+	if CLOSE_LOG_OUTPUT {
+		_log._log.SetOutput(ioutil.Discard)
+	}
 	SetHighlighting(runtime.GOOS != "windows")
 }
 

@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/pingcap-incubator/tinykv/log"
@@ -144,21 +143,27 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	var dummyIndex uint64
 	if i == 0 {
 		dummyIndex = 0
+	} else if l.FirstIndex() == 0 {
+		dummyIndex = 0
 	} else {
 		dummyIndex = l.FirstIndex() - 1
 	}
 
 	if i < dummyIndex || i > l.LastIndex() {
 		// TODO: return an error instead?
-		return 0, fmt.Errorf("require term with the index %d out of range, dummyIndex %d lastIndex %d", i, dummyIndex, l.LastIndex())
+		return 0, nil
+		//fmt.Errorf("require term with the index %d out of range, dummyIndex %d lastIndex %d", i, dummyIndex, l.LastIndex())
 	}
 
 	if i < l.FirstIndex() {
 		if !IsEmptySnap(l.pendingSnapshot) {
-			return 0, errors.New("can't handle pengding snapshot")
+			return 0, nil
+			// errors.New("can't handle pengding snapshot")
 		}
 	}
-
+	if len(l.entries) != 0 {
+		return l.entries[len(l.entries)-1].GetTerm(), nil
+	}
 	//storage.term retunr the term of entry i between firstIndex and lastIndex
 	si, err := l.storage.Term(i)
 	if err == nil {
@@ -194,19 +199,23 @@ func (l *RaftLog) appendEntry(entries ...pb.Entry) uint64 {
 		l.entries = append([]pb.Entry{}, l.entries[0:after]...)
 		l.entries = append(l.entries, entries...)
 	}
+
+	// log.Infof("Now appendEntry with lastIndex %d, lastTerm %d", l.LastIndex(), l.entries[len(entries)-1].Term)
 	return l.LastIndex()
 }
 
 func (l *RaftLog) lastTerm() uint64 {
 	term := mustTerm(l.Term(l.LastIndex()))
 	return term
+	// term, _ := l.Term(l.LastIndex())
+	// return term
 }
 
-func (l *RaftLog) isUpToDate(committedidx, logterm uint64) bool {
+func (l *RaftLog) isUpToDate(lastidx, logterm uint64) bool {
 	lastTerm := l.lastTerm()
 	if logterm > lastTerm { //as description in paper, >= in term is uptodate.
 		return true
-	} else if logterm == lastTerm && committedidx >= l.committed {
+	} else if logterm == lastTerm && lastidx >= l.LastIndex() {
 		return true
 	}
 	return false

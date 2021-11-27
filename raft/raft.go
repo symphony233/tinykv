@@ -206,7 +206,9 @@ func newRaft(c *Config) *Raft {
 		if hs.Commit < raftLog.committed || hs.Commit > raftLog.LastIndex() {
 			log.Panicf("%x state.commit %d is out of range [%d, %d]", r.id, hs.Commit, raftLog.committed, raftLog.LastIndex())
 		}
-		r.RaftLog.committed = hs.GetCommit()
+		if hs.GetCommit() != 0 {
+			r.RaftLog.committed = hs.GetCommit()
+		}
 		r.Term = hs.GetTerm()
 		r.Vote = hs.GetVote()
 	}
@@ -224,6 +226,7 @@ func newRaft(c *Config) *Raft {
 	//randomize the timeout to avoid votes split
 	nodeList := nodes(r)
 	r.setRandomizedElectionTimeout() // random election timeout
+	// r.electionTimeout = r.randomizedElectionTimeout
 	// r.heartbeatTimeout = 10 * r.randomizedElectionTimeout // follow the comment instruction
 	log.Infof("newRaft %x [peers: [%v], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d], heartbeatTimeout %d, electionTimeout %d",
 		r.id, nodeList, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex(), r.RaftLog.lastTerm(), r.heartbeatTimeout, r.electionTimeout)
@@ -302,7 +305,7 @@ func (r *Raft) reset(term uint64) {
 	r.Lead = None
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
-	// r.setRandomizedElectionTimeout()
+	r.setRandomizedElectionTimeout()
 
 	//abortLeaderTransfer
 
@@ -326,8 +329,8 @@ func (r *Raft) reset(term uint64) {
 
 // is electiontimeout ?
 func (r *Raft) isElectionTimeout() bool {
-	// return r.randomizedElectionTimeout <= r.electionElapsed
-	return r.electionTimeout <= r.electionElapsed
+	return r.randomizedElectionTimeout <= r.electionElapsed
+	// return r.electionTimeout <= r.electionElapsed
 }
 
 func (r *Raft) isHeartbeatTimeout() bool {
@@ -527,7 +530,7 @@ func (r *Raft) Step(m pb.Message) error {
 			// DebugPrintf("INFO", "%x received MsgHup but it is leader already", r.id)
 		}
 	case pb.MessageType_MsgRequestVote:
-		if (r.Vote == None || r.Vote == m.GetFrom()) && m.GetTerm() >= r.Term && r.RaftLog.isUpToDate(m.GetCommit(), m.GetLogTerm()) {
+		if m.GetTerm() > r.Term && (r.Vote == m.GetFrom() || r.Vote == None || m.GetTerm() > r.Term) && (m.GetTerm() > r.Term || r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm())) {
 			// No prevote here
 			// r.Vote == None: 还没投票
 			// m.Term > r.Term: 更高的term
@@ -568,6 +571,8 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 			r.sendMessage(msg)
 		}
+	case pb.MessageType_MsgTimeoutNow:
+		r.campaign()
 	default:
 		switch r.State {
 		case StateFollower:
@@ -653,6 +658,7 @@ func stepLeader(r *Raft, m pb.Message) {
 	case pb.MessageType_MsgPropose:
 		log.Infof("%d received MsgPropose in term %d", r.id, r.Term)
 		r.RaftLog.appendEntry(*m.Entries[0])
+		log.Infof("%d MsgPropose appendEntry at term %d, now last index is %d", r.id, r.Term, r.RaftLog.LastIndex())
 		r.bcastAppend()
 	case pb.MessageType_MsgBeat:
 		for i := range r.Prs {
@@ -755,9 +761,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 						existTerm, ent.Term)
 					// DebugPrintf("INFO", "found conflict at index %d [existing term: %d, conflicting term: %d]", ent.Index,
 					// 	existTerm, ent.Term)
+					confictIdx = int(ent.Index)
+					break
 				}
-				confictIdx = int(ent.Index)
-				break
 			}
 		}
 		if confictIdx == -1 {
@@ -815,9 +821,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 func (r *Raft) appTermMatch(index, logTerm uint64) bool {
 	tempTerm, err := r.RaftLog.Term(index)
 	if err != nil {
-		return false
+		panic(err)
 	}
-	return tempTerm == logTerm
+	return tempTerm <= logTerm
 }
 
 // handleHeartbeat handle Heartbeat RPC request

@@ -592,7 +592,7 @@ func TestFollowerCheckMessageType_MsgAppend2AB(t *testing.T) {
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
 		r.RaftLog.committed = 1
 		r.becomeFollower(2, 2)
-		msgs := r.readMessages() // clear message
+		msgs := r.readMessages()
 
 		r.Step(pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: tt.term, Index: tt.index})
 
