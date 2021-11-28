@@ -161,8 +161,12 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 			// errors.New("can't handle pengding snapshot")
 		}
 	}
-	if len(l.entries) != 0 {
-		return l.entries[len(l.entries)-1].GetTerm(), nil
+	if len(l.entries) != 0 && i != 0 {
+		return l.entries[int(i)-1].GetTerm(), nil
+	} else {
+		if i == 0 {
+			return 0, nil
+		}
 	}
 	//storage.term retunr the term of entry i between firstIndex and lastIndex
 	si, err := l.storage.Term(i)
@@ -200,7 +204,7 @@ func (l *RaftLog) appendEntry(entries ...pb.Entry) uint64 {
 		l.entries = append(l.entries, entries...)
 	}
 
-	// log.Infof("Now appendEntry with lastIndex %d, lastTerm %d", l.LastIndex(), l.entries[len(entries)-1].Term)
+	log.Infof("Now appendEntry with lastIndex %d, lastTerm %d", l.LastIndex(), l.entries[len(entries)-1].Term)
 	return l.LastIndex()
 }
 
