@@ -434,13 +434,14 @@ func (r *Raft) becomeLeader() {
 		Index: r.RaftLog.LastIndex() + 1,
 		Data:  nil,
 	}
-	propose_msg := pb.Message{
-		MsgType: pb.MessageType_MsgPropose,
-		Entries: []*pb.Entry{&noopEntry},
-		From:    r.id,
-		To:      r.id,
-		Term:    r.Term, //hard state term?
-	}
+	// propose_msg := pb.Message{
+	// 	MsgType: pb.MessageType_MsgPropose,
+	// 	Entries: []*pb.Entry{&noopEntry},
+	// 	From:    r.id,
+	// 	To:      r.id,
+	// 	Term:    r.Term, //hard state term?
+	// }
+	r.RaftLog.appendEntry(noopEntry)
 
 	//Cancel testing for next\match, assume all success before
 	//? why???
@@ -452,7 +453,8 @@ func (r *Raft) becomeLeader() {
 	// 		p.Next = r.RaftLog.LastIndex()
 	// 	}
 	// }
-	r.sendMessage(propose_msg)
+	// r.sendMessage(propose_msg)
+	r.bcastAppend()
 }
 
 func (r *Raft) rawAppendEntry(ent ...pb.Entry) {
@@ -664,9 +666,8 @@ func stepLeader(r *Raft, m pb.Message) {
 		}
 	case pb.MessageType_MsgPropose:
 		log.Infof("%d received MsgPropose in term %d", r.id, r.Term)
-		r.RaftLog.appendEntry(*m.Entries[0])
+		// r.RaftLog.appendEntry(*m.Entries[0])
 		log.Infof("%d MsgPropose appendEntry at term %d, now last index is %d", r.id, r.Term, r.RaftLog.LastIndex())
-		r.bcastAppend()
 	case pb.MessageType_MsgBeat:
 		for i := range r.Prs {
 			if i != r.id {
@@ -721,9 +722,9 @@ func stepFollower(r *Raft, m pb.Message) {
 		log.Infof("%d received MsgAppend from %d at term %d with previous match logTerm %d, previous Index %d",
 			r.id, m.GetFrom(), r.Term, m.GetLogTerm(), m.GetIndex())
 		r.handleAppendEntries(m)
-	case pb.MessageType_MsgPropose:
-		m.From = r.id
-		r.sendMessage(m)
+	// case pb.MessageType_MsgPropose:
+	// 	m.From = r.id
+	// 	r.sendMessage(m)
 	case pb.MessageType_MsgHeartbeat:
 		log.Infof("Follower %d received MsgHeartBeat at term %d, with leader term %d", r.id, r.Term, m.GetTerm())
 		if r.Term < m.GetTerm() {
