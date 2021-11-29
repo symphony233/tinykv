@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/pingcap-incubator/tinykv/log"
@@ -516,14 +517,15 @@ func (r *Raft) Step(m pb.Message) error {
 			// trigger election
 			// if there is unapplied entries, stop.
 			// commit before applied
-			ents, err := r.RaftLog.storage.Entries(r.RaftLog.applied+1, r.RaftLog.committed+1)
-			Must(err)
-			//can't elect when there are confs is not up to date.
-			if lenEnts := len(ents); lenEnts != 0 && r.RaftLog.committed > r.RaftLog.applied {
-				log.Warnf("%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
-				// DebugPrintf("WARNING", "%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
-				return nil
-			}
+			// log.Infof("%d received MsgHup at term: %d, commited: %d", r.id, r.Term, r.RaftLog.committed)
+			// ents := r.RaftLog.entries[r.RaftLog.applied+1 : r.RaftLog.committed+1]
+
+			// //can't elect when there are confs is not up to date.
+			// if lenEnts := len(ents); lenEnts != 0 && r.RaftLog.committed > r.RaftLog.applied {
+			// 	log.Warnf("%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
+			// 	// DebugPrintf("WARNING", "%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, lenEnts)
+			// 	return nil
+			// }
 			log.Infof("%x is starting election at term %d", r.id, r.Term)
 			// DebugPrintf("INFO", "%x is starting election at term %d", r.id, r.Term)
 			if len(r.Prs) == 1 { //only one, it's leader.
@@ -627,6 +629,28 @@ func (r *Raft) campaign() {
 	}
 }
 
+func (r *Raft) checkCommit() bool {
+	matchMap := make(map[uint64]uint32)
+	for _, pr := range r.Prs {
+		matchMap[pr.Match]++
+	}
+	quorumSlice := make(uint64Slice, 0)
+	for match, cnt := range matchMap {
+		if cnt >= uint32(r.quorum()) {
+			quorumSlice = append(quorumSlice, match)
+		}
+	}
+	sort.Sort(sort.Reverse(quorumSlice))
+	oldCommitted := r.RaftLog.committed
+	for _, val := range quorumSlice {
+		if mustTerm(r.RaftLog.Term(val)) == r.Term && r.RaftLog.committed <= val {
+			r.RaftLog.committed = val
+		}
+	}
+	log.Infof("Update committed from %d to %d", oldCommitted, r.RaftLog.committed)
+	return r.RaftLog.committed == oldCommitted
+}
+
 //Different roles' step function
 func stepLeader(r *Raft, m pb.Message) {
 	prog := r.Prs[m.From]
@@ -638,7 +662,7 @@ func stepLeader(r *Raft, m pb.Message) {
 
 	switch m.MsgType {
 	case pb.MessageType_MsgAppendResponse:
-		if m.Reject {
+		if m.GetReject() {
 			//handle reject
 			log.Infof("%x received msgApp rejection(lastindex: %d) from %x for sent next index %d",
 				r.id, m.Commit, m.From, m.Index)
@@ -646,7 +670,7 @@ func stepLeader(r *Raft, m pb.Message) {
 			// 	r.id, m.Commit, m.From, m.Index)
 			//then retry append
 			//modify progress
-			if m.Index > prog.Match {
+			if m.GetIndex() > prog.Match {
 				// reach the lower bound directly
 				prog.Next = prog.Match + 1
 				//send again
@@ -655,8 +679,9 @@ func stepLeader(r *Raft, m pb.Message) {
 		} else {
 			//handle ok
 			//?
-			prog.Match = r.RaftLog.LastIndex()
-			prog.Next = r.RaftLog.LastIndex() + 1
+			prog.Match = m.GetIndex()
+			prog.Next = prog.Match + 1
+			r.checkCommit()
 		}
 	case pb.MessageType_MsgAppend:
 		log.Infof("%d received MsgAppend in it's term %d from %d with term %d.", r.id, r.Term, m.GetFrom(), m.GetTerm())
@@ -666,8 +691,14 @@ func stepLeader(r *Raft, m pb.Message) {
 		}
 	case pb.MessageType_MsgPropose:
 		log.Infof("%d received MsgPropose in term %d", r.id, r.Term)
-		// r.RaftLog.appendEntry(*m.Entries[0])
+		for i, ent := range m.Entries {
+			ent.Term = r.Term
+			ent.Index = r.RaftLog.LastIndex() + 1 + uint64(i)
+			r.rawAppendEntry(*ent)
+		}
+		r.checkCommit()
 		log.Infof("%d MsgPropose appendEntry at term %d, now last index is %d", r.id, r.Term, r.RaftLog.LastIndex())
+		// r.bcastAppend()
 	case pb.MessageType_MsgBeat:
 		for i := range r.Prs {
 			if i != r.id {

@@ -91,7 +91,11 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) == 0 {
+		return make([]pb.Entry, 0)
+	}
+	log.Infof("Get UnstableEntries with entries' length: %d and l.stabled: %d", len(l.entries), l.stabled)
+	return l.entries[l.stabled:]
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -111,27 +115,31 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	if n := len(l.entries); n != 0 {
-		return l.entries[n-1].Index
-	}
+	var idx uint64 = 0
+
 	if !IsEmptySnap(l.pendingSnapshot) {
-		return l.pendingSnapshot.Metadata.Index
+		idx = l.pendingSnapshot.Metadata.Index
 	}
-	idx, err := l.storage.LastIndex()
+	if n := len(l.entries); n != 0 {
+		return max(idx, l.entries[len(l.entries)-1].Index)
+	}
+	st_idx, err := l.storage.LastIndex()
 	Must(err)
-	return idx
+
+	return max(st_idx, idx)
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
 	i, err := l.storage.FirstIndex()
 	if err != nil {
-		log.Warning("Detect empty entry in FirstIndex()")
+		// log.Warning("Detect empty entry in FirstIndex()")
 		return 0
 	}
+
 	if i < uint64(len(l.entries)) && len(l.entries) != 0 {
 		return l.entries[0].Index
 	} else {
-		log.Warning("Detect empty entry in FirstIndex()")
+		// log.Warning("Detect empty entry in FirstIndex()")
 		return 0
 	}
 }
