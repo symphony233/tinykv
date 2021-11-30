@@ -95,16 +95,17 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 		return make([]pb.Entry, 0)
 	}
 	log.Infof("Get UnstableEntries with entries' length: %d and l.stabled: %d", len(l.entries), l.stabled)
-	return l.entries[l.stabled:]
+	return l.entries[l.stabled-l.entries[0].Index+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	i := l.committed
-	j := l.applied + 1
+	i := l.committed - 1
+	j := l.applied + 1 - 1
+	log.Infof("In nextEnts() begin with appliedEntry: %d, committedEntry: %d", l.applied, l.committed)
 	entslice := make([]pb.Entry, 0)
-	ltoa(l)
+	// ltoa(l)
 	for j <= i {
 		entslice = append(entslice, l.entries[j])
 		j++
@@ -199,19 +200,20 @@ func (l *RaftLog) appendEntry(entries ...pb.Entry) uint64 {
 	}
 	after := entries[0].Index
 	switch {
-	case after == l.LastIndex()+1:
+	case after == l.LastIndex()+1 || len(l.entries) == 0:
 		l.entries = append(l.entries, entries...)
-	case after <= l.stabled:
+	case after <= l.entries[0].GetIndex():
 		l.stabled = after - 1
-		tempEntries := l.entries[0 : l.stabled+1]
-		l.entries = make([]pb.Entry, l.stabled+1)
-		copy(l.entries, tempEntries)
-		l.entries = append(l.entries, entries...)
+		l.entries = entries
+		// tempEntries := l.entries[0 : l.stabled+1]
+		// l.entries = make([]pb.Entry, l.stabled+1)
+		// copy(l.entries, tempEntries)
+		// l.entries = append(l.entries, entries...)
 	default:
-		l.entries = append([]pb.Entry{}, l.entries[0:after]...)
-		l.entries = append(l.entries, entries...)
+		ents, _ := l.slice(l.entries[0].GetIndex(), after)
+		l.entries = append(ents, entries...)
 	}
-
+	l.stabled = min(l.stabled, after-1)
 	log.Infof("Now appendEntry with lastIndex %d, lastTerm %d", l.LastIndex(), l.entries[len(entries)-1].Term)
 	return l.LastIndex()
 }
@@ -231,4 +233,43 @@ func (l *RaftLog) isUpToDate(lastidx, logterm uint64) bool {
 		return true
 	}
 	return false
+}
+
+func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
+	if lo == uint64(1) && hi == uint64(0) || lo >= hi {
+		return nil, nil
+	}
+	var ents []pb.Entry
+	if len(l.entries) != 0 {
+		if hi > l.entries[0].GetIndex() {
+			ents = l.entries[max(lo, l.entries[0].Index)-l.entries[0].Index : hi-l.entries[0].Index]
+		}
+		var storageEnts []pb.Entry
+		var err error
+		switch {
+		case len(ents) == 0:
+			storageEnts, err = l.storage.Entries(lo, min(hi, l.LastIndex()+1))
+		case ents[0].GetIndex() > lo:
+			storageEnts, err = l.storage.Entries(lo, ents[0].GetIndex())
+		}
+
+		switch err {
+		case ErrCompacted:
+			return nil, err
+		case ErrUnavailable:
+			panic("entries is unavailable in storage")
+		case nil:
+			break
+		default:
+			panic(err)
+		}
+		ents = append(storageEnts, ents...)
+	} else {
+		storageEnts, err := l.storage.Entries(lo, min(hi, l.LastIndex()+1))
+		if err != nil {
+			panic(err)
+		}
+		copy(ents, storageEnts)
+	}
+	return ents, nil
 }
