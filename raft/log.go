@@ -131,17 +131,17 @@ func (l *RaftLog) LastIndex() uint64 {
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
-	i, err := l.storage.FirstIndex()
-	if err != nil {
-		// log.Warning("Detect empty entry in FirstIndex()")
-		return 0
-	}
+	i, _ := l.storage.FirstIndex()
+	// if err != nil {
+	// 	// log.Warning("Detect empty entry in FirstIndex()")
+	// 	return 0
+	// }
 
-	if i < uint64(len(l.entries)) && len(l.entries) != 0 {
+	if len(l.entries) != 0 && l.entries[0].Index < i {
 		return l.entries[0].Index
 	} else {
 		// log.Warning("Detect empty entry in FirstIndex()")
-		return 0
+		return i
 	}
 }
 
@@ -149,32 +149,23 @@ func (l *RaftLog) FirstIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	// the valid term range is [index of dummy entry, last index]
-	var dummyIndex uint64
-	if i == 0 {
-		dummyIndex = 0
-	} else if l.FirstIndex() == 0 {
-		dummyIndex = 0
-	} else {
-		dummyIndex = l.FirstIndex() - 1
-	}
+	// var preIndex uint64 = 0
+	// if len(l.entries) != 0 {
+	// 	preIndex = l.entries[0].Index
+	// }
 
-	if i < dummyIndex || i > l.LastIndex() {
+	dummyIndex := l.FirstIndex() - 1
+	// log.Infof("Want to get Term for Index [%d], with entries[0].Index [%d], dummyIndex [%d]", i, preIndex, dummyIndex)
+	if i < dummyIndex || i > l.LastIndex() || i == 0 {
 		// TODO: return an error instead?
+		fmt.Errorf("require term with the index %d out of range, dummyIndex %d lastIndex %d", i, dummyIndex, l.LastIndex())
 		return 0, nil
-		//fmt.Errorf("require term with the index %d out of range, dummyIndex %d lastIndex %d", i, dummyIndex, l.LastIndex())
 	}
 
-	if i < l.FirstIndex() {
-		if !IsEmptySnap(l.pendingSnapshot) {
-			return 0, nil
-			// errors.New("can't handle pengding snapshot")
-		}
-	}
-	if len(l.entries) != 0 && i != 0 {
-		return l.entries[int(i)-1].GetTerm(), nil
-	} else {
-		if i == 0 {
-			return 0, nil
+	if len(l.entries) != 0 {
+		tempIndex := int(i) - int(l.entries[0].Index)
+		if tempIndex >= 0 && tempIndex <= int(len(l.entries)-1) {
+			return l.entries[tempIndex].Term, nil
 		}
 	}
 	//storage.term retunr the term of entry i between firstIndex and lastIndex
@@ -182,8 +173,18 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if err == nil {
 		return si, nil
 	} else {
-		return 0, err
+		if err == ErrCompacted || err == ErrUnavailable {
+			if !IsEmptySnap(l.pendingSnapshot) {
+				if i == l.pendingSnapshot.Metadata.Index {
+					return l.pendingSnapshot.Metadata.Term, nil
+				} else if i < l.pendingSnapshot.Metadata.Index {
+					err = ErrCompacted
+				}
+			}
+			return 0, err
+		}
 	}
+	panic(err)
 	// if err == ErrCompacted || err == ErrUnavailable {
 	// 	return 0, err
 	// }

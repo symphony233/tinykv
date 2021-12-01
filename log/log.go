@@ -16,7 +16,7 @@ import (
 	"runtime"
 )
 
-var CLOSE_LOG_OUTPUT bool = false
+var CLOSE_LOG_OUTPUT bool = true
 
 const (
 	Ldate         = log.Ldate

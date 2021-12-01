@@ -242,10 +242,10 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	prog := r.Prs[to]
-	prev_match_term, terr := r.RaftLog.Term(prog.Match)
+	prevMatchTerm, terr := r.RaftLog.Term(prog.Next - 1)
 	ents, _ := r.RaftLog.slice(prog.Next, r.RaftLog.LastIndex()+1)
 	log.Warnf("%d with %d's prog Match: %d, Next: %d, raftlog-entries len %d, ents len %d",
-		r.id, to, prog.Match, prog.Next, len(r.RaftLog.entries), len(ents))
+		r.id, to, prog.Next-1, prog.Next, len(r.RaftLog.entries), len(ents))
 	pEnts := make([]*pb.Entry, 0)
 	for i := range ents {
 		pEnts = append(pEnts, &ents[i])
@@ -261,11 +261,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	} else {
 		msg = pb.Message{
 			MsgType: pb.MessageType_MsgAppend,
-			Index:   prog.Match,
+			Index:   prog.Next - 1,
 			Term:    r.Term,
 			From:    r.id,
 			To:      to,
-			LogTerm: prev_match_term,
+			LogTerm: prevMatchTerm,
 			Entries: pEnts,
 			Commit:  r.RaftLog.committed,
 		}
@@ -281,7 +281,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed,
+		Commit:  min(r.RaftLog.committed, r.Prs[to].Match),
 		From:    r.id,
 		To:      to,
 	}
@@ -324,10 +324,11 @@ func (r *Raft) reset(term uint64) {
 	// 索引。那么Next、Match重新设定的值就显而易见了。
 	for i, pr := range r.Prs {
 		// log.Infof("%d build progress for %d", r.id, i)
-		*pr = Progress{Next: r.RaftLog.LastIndex() + 1, Match: r.RaftLog.LastIndex()}
+		tPr := &Progress{Next: r.RaftLog.LastIndex() + 1}
 		if i == r.id {
 			pr.Match = r.RaftLog.LastIndex()
 		}
+		r.Prs[i] = tPr
 	}
 
 	//TODO: pengdingconfig
@@ -415,6 +416,8 @@ func (r *Raft) becomeLeader() {
 	r.reset(r.Term) // 其实就是每一次都重新做一次初始化
 	r.Lead = r.id
 	r.State = StateLeader
+	r.Prs[r.id].Match = max(r.RaftLog.LastIndex(), r.Prs[r.id].Match)
+	r.Prs[r.id].Next = max(r.RaftLog.LastIndex()+1, r.Prs[r.id].Next)
 	log.Infof("%d became Leader in term %d", r.id, r.Term)
 	confCnt := 0
 	for i := 0; i < int(r.RaftLog.committed) && i < len(r.RaftLog.entries); i++ {
@@ -656,7 +659,7 @@ func (r *Raft) checkCommit() bool {
 		log.Infof("Update committed from %d to %d", oldCommitted, r.RaftLog.committed)
 		return true
 	}
-	log.Infof("Can not update committed, quorumSlice len: %d", len(quorumSlice))
+	log.Infof("Can not update committed, quorum committed: %d", tempCommitted)
 	return false
 }
 
@@ -686,8 +689,8 @@ func stepLeader(r *Raft, m pb.Message) {
 			// 	r.sendAppend(m.From)
 			// }
 
-			prog.Match = max(prog.Match-1, r.RaftLog.FirstIndex())
-			prog.Next = prog.Match + 1
+			// prog.Match = prog.Match - 1
+			prog.Next--
 			r.sendAppend(m.GetFrom())
 		} else {
 			//handle ok
@@ -730,7 +733,9 @@ func stepLeader(r *Raft, m pb.Message) {
 			}
 		}
 	case pb.MessageType_MsgHeartbeatResponse:
-
+		if m.Commit != r.RaftLog.committed {
+			r.sendAppend(m.From)
+		}
 	}
 }
 
@@ -761,8 +766,10 @@ func stepCandidate(r *Raft, m pb.Message) {
 		//candidate received masappend, indicating there is a validate leader.
 		log.Infof("%d received MsgAppend from %d at term %d with previous match logTerm %d, previous Index %d",
 			r.id, m.GetFrom(), r.Term, m.GetLogTerm(), m.GetIndex())
+		// if m.Term > r.Term {
 		r.becomeFollower(r.Term, m.GetFrom())
 		r.handleAppendEntries(m)
+		// }
 	case pb.MessageType_MsgHeartbeat:
 		if r.Term < m.GetTerm() {
 			r.becomeFollower(r.Term, m.GetFrom())
@@ -828,7 +835,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		log.Infof("%d received AppendEntries from %d at term %d, and term match",
 			r.id, m.GetFrom(), r.Term)
 		// lastIdx := m.Index + uint64(len(m.Entries))
-
+		lastNewEntryIndex := m.Index + uint64(len(m.Entries))
 		confictIdx := -1
 		cleanEntry := make([]*pb.Entry, 0)
 		//find conflict
@@ -861,7 +868,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				ents = append(ents, *ent)
 			}
 			r.RaftLog.appendEntry(ents...)
-			log.Infof("%d append entry with last logTerm %d andlastIndex %d",
+			log.Infof("%d append entry with last logTerm %d and lastIndex %d",
 				r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex())
 		} else if confictIdx <= int(r.RaftLog.committed) && confictIdx >= 0 {
 			//impossible situation
@@ -889,6 +896,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			Term:    r.Term,
 		}
 		// r.Term = m.GetTerm()
+		// log.Infof("last new entry index = %d", m.Index+uint64(len(m.Entries)))
+		r.RaftLog.committed = max(r.RaftLog.committed, min(m.GetCommit(), lastNewEntryIndex))
 		r.sendMessage(msg)
 	} else {
 		mIdx, err := r.RaftLog.Term(m.GetIndex())
@@ -910,8 +919,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.sendMessage(msg)
 	}
 
-	r.RaftLog.committed = max(r.RaftLog.committed, min(m.GetCommit(), r.RaftLog.LastIndex()))
-
 }
 
 func (r *Raft) appTermMatch(index, logTerm uint64) bool {
@@ -919,20 +926,26 @@ func (r *Raft) appTermMatch(index, logTerm uint64) bool {
 	if err != nil {
 		panic(err)
 	}
+
 	// if tempTerm == 0 && len(r.RaftLog.entries) != 0 {
 	// 	return false
 	// }
-	return tempTerm == logTerm || tempTerm == 0
+	return tempTerm == logTerm
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	r.RaftLog.committed = max(r.RaftLog.committed, min(m.GetCommit(), r.RaftLog.LastIndex()))
+	log.Infof("%d handle Heartbeat from %d with committed %d", r.id, m.GetFrom(), m.GetCommit())
+	r.becomeFollower(m.Term, m.From)
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(m.GetCommit(), r.RaftLog.LastIndex())
+	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		To:      m.GetFrom(),
 		From:    r.id,
+		Commit:  r.RaftLog.committed,
 	}
 	r.sendMessage(msg)
 }
