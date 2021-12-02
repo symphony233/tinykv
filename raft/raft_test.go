@@ -370,7 +370,7 @@ func TestCommitWithHeartbeat2AB(t *testing.T) {
 	// network recovery
 	tt.recover()
 
-	// leader broadcast heartbeeat
+	// leader broadcast heartbeat
 	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
 
 	if sm.RaftLog.committed != 3 {
@@ -552,8 +552,6 @@ func TestProposal2AB(t *testing.T) {
 				if g := diffu(base, l); g != "" {
 					t.Errorf("#%d: diff:\n%s", i, g)
 				}
-			} else {
-				t.Logf("#%d: empty log", i)
 			}
 		}
 		sm := tt.network.peers[1].(*Raft)
@@ -576,8 +574,8 @@ func TestHandleMessageType_MsgAppend2AB(t *testing.T) {
 		wReject bool
 	}{
 		// Ensure 1
-		{pb.Message{MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: 3, Index: 2, Commit: 3}, 2, 0, true}, // previous log mismatch
-		{pb.Message{MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: 3, Index: 3, Commit: 3}, 2, 0, true}, // previous log non-exist
+		{pb.Message{MsgType: pb.MessageType_MsgAppend, Term: 3, LogTerm: 3, Index: 2, Commit: 3}, 2, 0, true}, // previous log mismatch
+		{pb.Message{MsgType: pb.MessageType_MsgAppend, Term: 3, LogTerm: 3, Index: 3, Commit: 3}, 2, 0, true}, // previous log non-exist
 
 		// Ensure 2
 		{pb.Message{MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: 1, Index: 1, Commit: 1}, 2, 1, false},
@@ -616,7 +614,7 @@ func TestHandleMessageType_MsgAppend2AB(t *testing.T) {
 	}
 }
 
-func TestRecvMessageType_MsgRequestVote2AA(t *testing.T) {
+func TestRecvMessageType_MsgRequestVote2AB(t *testing.T) {
 	msgType := pb.MessageType_MsgRequestVote
 	msgRespType := pb.MessageType_MsgRequestVoteResponse
 	tests := []struct {
