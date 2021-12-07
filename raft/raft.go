@@ -717,10 +717,8 @@ func stepLeader(r *Raft, m pb.Message) {
 		for i, ent := range m.Entries {
 			ent.Term = r.Term
 			ent.Index = r.RaftLog.LastIndex() + 1 + uint64(i)
-			if m.GetTo() == r.id {
-				r.Prs[r.id].Match = ent.Index
-				r.Prs[r.id].Next = ent.Index + 1
-			}
+			r.Prs[r.id].Match = ent.Index
+			r.Prs[r.id].Next = ent.Index + 1
 			r.rawAppendEntry(*ent)
 		}
 		r.checkCommit()
@@ -948,6 +946,18 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		Commit:  r.RaftLog.committed,
 	}
 	r.sendMessage(msg)
+}
+
+func (r *Raft) softState() *SoftState {
+	return &SoftState{r.Lead, r.State}
+}
+
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
 }
 
 // handleSnapshot handle Snapshot RPC request

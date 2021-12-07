@@ -101,16 +101,52 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	i := l.committed - 1
-	j := l.applied + 1 - 1
+	// i := l.committed
+	// j := l.applied + 1
 	log.Infof("In nextEnts() begin with appliedEntry: %d, committedEntry: %d", l.applied, l.committed)
-	entslice := make([]pb.Entry, 0)
-	// ltoa(l)
-	for j <= i {
-		entslice = append(entslice, l.entries[j])
-		j++
+	// entslice := make([]pb.Entry, 0)
+	// // ltoa(l)
+	// if len(l.entries) != 0 {
+	// 	for j <= i {
+	// 		entslice = append(entslice, l.entries[j-l.entries[0].Index])
+	// 		j++
+	// 	}
+	// }
+	// return entslice
+	begin := max(l.applied+1, l.FirstIndex())
+	if l.committed < begin {
+		return nil
 	}
-	return entslice
+	ents, err := l.slice(begin, l.committed+1) //[,)
+	if err != nil {
+		panic(err)
+	}
+	return ents
+}
+
+// applied
+func (l *RaftLog) appliedTo(i uint64) {
+	if i == 0 {
+		return
+	}
+	if i > l.committed || i < l.applied {
+		log.Panicf("applied(%d) is out of range [prevApplied(%d), committed(%d)]", i, l.applied, l.committed)
+	}
+	l.applied = i
+}
+
+// stable entries
+func (l *RaftLog) stableTo(index, term uint64) {
+	if index == 0 {
+		return
+	}
+	idxTerm, err := l.Term(index)
+	if err != nil {
+		return
+	}
+	if idxTerm == term && index >= l.stabled {
+		l.stabled = index
+	}
 }
 
 // LastIndex return the last index of the log entries
@@ -128,6 +164,14 @@ func (l *RaftLog) LastIndex() uint64 {
 	Must(err)
 
 	return max(st_idx, idx)
+}
+
+//from etcd
+// hasNextEnts returns if there is any available entries for execution. This
+// is a fast check without heavy raftLog.slice() in raftLog.nextEnts().
+func (l *RaftLog) hasNextEnts() bool {
+	off := max(l.applied+1, l.FirstIndex())
+	return l.committed+1 > off
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
