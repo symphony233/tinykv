@@ -156,8 +156,8 @@ func (rn *RawNode) Ready() Ready {
 	ready := Ready{}
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
-	ready.Messages = rn.Raft.msgs
-	rn.Raft.msgs = rn.Raft.msgs[0:0]
+	copy(ready.Messages, rn.Raft.msgs) //ready.Messages = rn.Raft.msgs
+	rn.Raft.msgs = make([]pb.Message, 0)
 	if !isSoftstateEqual(rn.Raft.softState(), rn.prevSoftst) {
 		ready.SoftState = rn.Raft.softState()
 	}

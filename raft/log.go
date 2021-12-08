@@ -284,12 +284,12 @@ func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
 	if lo == uint64(1) && hi == uint64(0) || lo >= hi {
 		return nil, nil
 	}
-	var ents []pb.Entry
+	var ents = make([]pb.Entry, 0)
 	if len(l.entries) != 0 {
 		if hi > l.entries[0].GetIndex() {
 			ents = l.entries[max(lo, l.entries[0].Index)-l.entries[0].Index : hi-l.entries[0].Index]
 		}
-		var storageEnts []pb.Entry
+		var storageEnts = make([]pb.Entry, 0)
 		var err error
 		switch {
 		case len(ents) == 0:
